@@ -9,6 +9,7 @@ Fonctions publiques :
 """
 
 import os
+import sys
 import time as _time
 
 
@@ -42,20 +43,106 @@ def get_available_renderers():
     return renderers
 
 
+def _is_android() -> bool:
+    """Détecte si on tourne sur Android (Flet mobile)."""
+    # Flet sur Android : sys.platform vaut 'linux' mais /sdcard existe
+    return sys.platform == "linux" and (
+        os.path.isdir("/sdcard") or os.path.isdir("/storage/emulated/0")
+    )
+
+
 def get_available_save_locations(page=None):
-    """Retourne les dossiers de sauvegarde disponibles sur la machine."""
-    home = os.path.expanduser("~")
-    candidates = [
-        {"path": home,                                      "label": "Dossier personnel (~)"},
-        {"path": os.path.join(home, "Documents"),           "label": "Documents"},
-        {"path": os.path.join(home, "Téléchargements"),     "label": "Téléchargements"},
-        {"path": os.path.join(home, "Downloads"),           "label": "Downloads"},
-        {"path": os.path.join(home, "Bureau"),              "label": "Bureau"},
-        {"path": os.path.join(home, "Desktop"),             "label": "Desktop"},
-    ]
-    locations = [c for c in candidates if os.path.isdir(c["path"])]
+    """
+    Retourne la liste des dossiers de sauvegarde disponibles,
+    adaptée à la plateforme : Android, Windows, macOS ou Linux.
+    Seuls les dossiers existants et accessibles en écriture sont inclus.
+    """
+    locations = []
+
+    # ── Android ──────────────────────────────────────────────────────────────
+    if _is_android():
+        android_bases = ["/sdcard", "/storage/emulated/0"]
+        base = next((p for p in android_bases if os.path.isdir(p) and os.access(p, os.W_OK)), None)
+        if base:
+            candidates = [
+                {"path": base,                              "label": "Stockage interne"},
+                {"path": os.path.join(base, "Documents"),  "label": "Documents"},
+                {"path": os.path.join(base, "Downloads"),  "label": "Téléchargements"},
+                {"path": os.path.join(base, "DCIM"),       "label": "DCIM"},
+                {"path": os.path.join(base, "Music"),      "label": "Musique"},
+                {"path": os.path.join(base, "Movies"),     "label": "Vidéos"},
+            ]
+            # Stockage externe SD card
+            for ext in ["/storage/sdcard1", "/mnt/sdcard1", "/mnt/extSdCard"]:
+                if os.path.isdir(ext) and os.access(ext, os.W_OK):
+                    candidates.append({"path": ext, "label": "Carte SD externe"})
+            locations = [c for c in candidates if os.path.isdir(c["path"]) and os.access(c["path"], os.W_OK)]
+
+    # ── Windows ──────────────────────────────────────────────────────────────
+    elif sys.platform == "win32":
+        home = os.path.expanduser("~")
+        candidates = [
+            {"path": home,                                         "label": "Dossier personnel"},
+            {"path": os.path.join(home, "Documents"),              "label": "Documents"},
+            {"path": os.path.join(home, "Downloads"),              "label": "Téléchargements"},
+            {"path": os.path.join(home, "Desktop"),                "label": "Bureau"},
+            {"path": os.path.join(home, "OneDrive", "Documents"),  "label": "OneDrive – Documents"},
+            {"path": os.path.join(home, "OneDrive"),               "label": "OneDrive"},
+        ]
+        # Lecteurs disponibles (C:, D:, E:…)
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = f"{letter}:\\"
+            if os.path.isdir(drive) and os.access(drive, os.W_OK):
+                candidates.append({"path": drive, "label": f"Disque {letter}:"})
+        locations = [c for c in candidates if os.path.isdir(c["path"]) and os.access(c["path"], os.W_OK)]
+
+    # ── macOS ─────────────────────────────────────────────────────────────────
+    elif sys.platform == "darwin":
+        home = os.path.expanduser("~")
+        candidates = [
+            {"path": home,                                  "label": "Dossier personnel"},
+            {"path": os.path.join(home, "Documents"),       "label": "Documents"},
+            {"path": os.path.join(home, "Downloads"),       "label": "Téléchargements"},
+            {"path": os.path.join(home, "Desktop"),         "label": "Bureau"},
+            {"path": os.path.join(home, "iCloud Drive"),    "label": "iCloud Drive"},
+            {"path": "/Volumes",                            "label": "Volumes (disques externes)"},
+        ]
+        # Disques montés dans /Volumes
+        if os.path.isdir("/Volumes"):
+            for vol in os.listdir("/Volumes"):
+                vol_path = f"/Volumes/{vol}"
+                if os.path.isdir(vol_path) and os.access(vol_path, os.W_OK):
+                    candidates.append({"path": vol_path, "label": f"Volume : {vol}"})
+        locations = [c for c in candidates if os.path.isdir(c["path"]) and os.access(c["path"], os.W_OK)]
+
+    # ── Linux / autre ────────────────────────────────────────────────────────
+    else:
+        home = os.path.expanduser("~")
+        candidates = [
+            {"path": home,                                   "label": "Dossier personnel (~)"},
+            {"path": os.path.join(home, "Documents"),        "label": "Documents"},
+            {"path": os.path.join(home, "Téléchargements"),  "label": "Téléchargements"},
+            {"path": os.path.join(home, "Downloads"),        "label": "Downloads"},
+            {"path": os.path.join(home, "Bureau"),           "label": "Bureau"},
+            {"path": os.path.join(home, "Desktop"),          "label": "Desktop"},
+        ]
+        # Médias montés dans /media ou /mnt
+        for mount_root in [f"/media/{os.getlogin()}", "/media", "/mnt"]:
+            try:
+                if os.path.isdir(mount_root):
+                    for vol in os.listdir(mount_root):
+                        vol_path = os.path.join(mount_root, vol)
+                        if os.path.isdir(vol_path) and os.access(vol_path, os.W_OK):
+                            candidates.append({"path": vol_path, "label": f"Média : {vol}"})
+            except Exception:
+                pass
+        locations = [c for c in candidates if os.path.isdir(c["path"]) and os.access(c["path"], os.W_OK)]
+
+    # Garantir au moins un emplacement de secours
     if not locations:
-        locations = [{"path": home, "label": "Dossier personnel (~)"}]
+        fallback = os.path.expanduser("~")
+        locations = [{"path": fallback, "label": "Dossier personnel (~)"}]
+
     return locations
 
 
